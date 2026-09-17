@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+
+# Persistent browser profile data
+.browser-data/
+.browser-data*
+
+# Uploads & Temporary files
+uploads/
+scratch/
+*.log
+
+# Build outputs
+dist/
+client/dist/
+build/
+
+# IDE / OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
