@@ -19,11 +19,15 @@ if (!process.env.MONGODB_URI) {
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/autoapply';
 
-// Set Custom DNS Servers for reliable MongoDB Atlas SRV resolution
-dns.setServers(['8.8.8.8', '1.1.1.1']);
+// Set Custom DNS Servers for reliable MongoDB Atlas SRV resolution safely
+try {
+  dns.setServers(['8.8.8.8', '1.1.1.1']);
+} catch (e) {
+  console.warn('[DNS] Custom DNS setServers failed, using system default DNS:', e.message);
+}
 
-// Disable operation buffering so queries fail fast when DB is disconnected
-mongoose.set('bufferCommands', false);
+// Enable operation buffering (Mongoose default) so queries wait briefly if connection is establishing
+mongoose.set('bufferCommands', true);
 
 // Global Process Crash Protection (prevents background Playwright/worker errors from killing Express)
 process.on('uncaughtException', (err) => {
@@ -72,17 +76,51 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Connect Database Function with Exact Safe Logging
+// Connect Database Function with Auto-Retry & Fallback
 async function connectDB() {
   console.log('[DB] Connecting to MongoDB...');
-  try {
-    await mongoose.connect(MONGODB_URI, {
-      serverSelectionTimeoutMS: 10000,
-      family: 4
-    });
-    console.log('[DB] MongoDB connected');
-  } catch (err) {
-    console.error(`[DB] Connection failed: ${err.message}`);
+  
+  const primaryUri = MONGODB_URI;
+  const fallbackUri = 'mongodb://127.0.0.1:27017/autoapply';
+
+  const tryConnect = async (uri, label) => {
+    try {
+      console.log(`[DB] Attempting connection to ${label}...`);
+      await mongoose.connect(uri, {
+        serverSelectionTimeoutMS: 8000,
+        family: 4
+      });
+      console.log(`[DB] MongoDB connected successfully (${label})`);
+      return true;
+    } catch (err) {
+      console.error(`[DB] Connection to ${label} failed: ${err.message}`);
+      return false;
+    }
+  };
+
+  let connected = await tryConnect(primaryUri, 'Primary URI');
+
+  if (!connected && primaryUri !== fallbackUri) {
+    console.warn('[DB] Primary MongoDB connection failed. Trying local MongoDB fallback...');
+    connected = await tryConnect(fallbackUri, 'Local Fallback');
+  }
+
+  if (!connected) {
+    console.error('[DB] Initial connection failed. Retrying in background every 10s...');
+    const retryInterval = setInterval(async () => {
+      if (mongoose.connection.readyState === 1) {
+        clearInterval(retryInterval);
+        return;
+      }
+      console.log('[DB] Background reconnecting to MongoDB...');
+      const ok = await tryConnect(primaryUri, 'Primary Retry');
+      if (!ok && primaryUri !== fallbackUri) {
+        await tryConnect(fallbackUri, 'Fallback Retry');
+      }
+      if (mongoose.connection.readyState === 1) {
+        clearInterval(retryInterval);
+      }
+    }, 10000);
   }
 }
 

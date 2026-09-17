@@ -34,6 +34,18 @@ function isDbConnected() {
   return mongoose.connection.readyState === 1;
 }
 
+// Helper to wait briefly for DB connection to be ready (prevents startup 503 race conditions)
+async function ensureDbConnected(timeoutMs = 4000) {
+  if (mongoose.connection.readyState === 1) return true;
+  
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeoutMs) {
+    if (mongoose.connection.readyState === 1) return true;
+    await new Promise(r => setTimeout(r, 250));
+  }
+  return mongoose.connection.readyState === 1;
+}
+
 // Helper to compute live dashboard stats safely
 async function computeDashboardStats() {
   const { getDuplicatesRemovedCount, getCurrentRunId } = require('../services/jobScraper');
@@ -373,7 +385,8 @@ router.get('/applications/:id/download-tailored', async (req, res) => {
 // 2. Candidate Profile GET & PUT
 router.get('/profile', async (req, res) => {
   try {
-    if (!isDbConnected()) {
+    const dbOk = await ensureDbConnected(3000);
+    if (!dbOk) {
       const defaultProfile = {
         name: 'Candidate',
         email: '',
@@ -435,8 +448,9 @@ router.get('/profile', async (req, res) => {
 
 router.put('/profile', async (req, res) => {
   try {
-    if (!isDbConnected()) {
-      return res.status(503).json({ success: false, error: 'MongoDB is not connected' });
+    const dbOk = await ensureDbConnected(4000);
+    if (!dbOk) {
+      return res.status(503).json({ success: false, error: 'MongoDB is connecting or unavailable. Please try again in a moment.' });
     }
 
     let profile = await CandidateProfile.findOne();
@@ -447,7 +461,7 @@ router.put('/profile', async (req, res) => {
     return res.json({ success: true, profile });
   } catch (err) {
     console.error('[API Error] Update profile error:', err.message);
-    return res.status(503).json({ success: false, error: 'MongoDB is not connected' });
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
